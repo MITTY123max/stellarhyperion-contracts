@@ -41,6 +41,11 @@ contract Execute is DeployConfig {
         string[] memory whats = record.readStringArray(".queuedActions");
 
         require(record.readUint(".chainId") == block.chainid, "record chain id differs from RPC");
+        require(
+            vm.keyExistsJson(record, ".genesisBlockHash")
+                && record.readBytes32(".genesisBlockHash") == observedGenesisBlockHash(),
+            "record genesis block differs from RPC; legacy records require reviewed rebinding"
+        );
         require(routerAddress.code.length != 0, "record router has no code");
         require(ids.length > 0 && ids.length <= 64, "invalid deployment action count");
         for (uint256 i; i < ids.length; ++i) {

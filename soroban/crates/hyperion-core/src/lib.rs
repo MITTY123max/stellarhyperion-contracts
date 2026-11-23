@@ -12,6 +12,9 @@
 //! reproducible trace. Chain-specific time semantics (Stellar ledger sequence versus EVM
 //! block timestamps) are modeled explicitly rather than assumed to be interchangeable.
 //!
+//! Replay identity is the route-scoped full-width provider message ID. A source nonce or a
+//! shortened display form is diagnostic metadata only and must never become the replay key.
+//!
 //! # Deployment trust assumptions
 //!
 //! The active deployment is Stellar Testnet outbound ITS/CCTP; these notes do not activate

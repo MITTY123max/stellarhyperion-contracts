@@ -25,8 +25,29 @@ function env() {
     HYPERION_TIMELOCK_DELAY: "3600",
     HYPERION_DEPLOYER: data.admin,
     HYPERION_PEER_CHAIN: "sepolia",
+    HYPERION_INITIALIZATION_TX_HASH: "a".repeat(64),
     ROUTER_HASH: data.wasmHashes.router,
     HYPERION_ROUTER_LEDGER: "100",
+  };
+}
+function rpc(ledger = 100, passphrase = data.networkPassphrase) {
+  return async (method) =>
+    method === "getNetwork"
+      ? { passphrase }
+      : {
+          status: "SUCCESS",
+          ledger,
+          envelopeXdr: "fixture",
+          createdAt: "2026-10-28T17:08:25Z",
+        };
+}
+function evidence(ledger = 100, passphrase = data.networkPassphrase) {
+  return {
+    rpc: rpc(ledger, passphrase),
+    verifyEnvelope: () => ({
+      hash: "a".repeat(64),
+      source: data.admin,
+    }),
   };
 }
 test("writer records validated unsupported metadata consumed by the real report", async () => {
@@ -36,7 +57,7 @@ test("writer records validated unsupported metadata consumed by the real report"
     HYPERION_ROLLBACK_SUPPORTED: "false",
     HYPERION_ROLLBACK_REASON: "Reviewed incompatible liability migration",
   };
-  const record = await buildRecord(values);
+  const record = await buildRecord(values, evidence());
   assert.equal(
     record.networks["stellar-testnet"].storageMigration.rollbackSupported,
     false,
@@ -84,32 +105,39 @@ test("writer rejects unsupported networks, malformed IDs and unbounded extension
     { QUEUE_WHAT_JSON: JSON.stringify(Array(129).fill("a")) },
     { QUEUE_IDS_JSON: " ".repeat(65537) },
   ])
-    await assert.rejects(buildRecord({ ...env(), ...changes }));
+    await assert.rejects(buildRecord({ ...env(), ...changes }, evidence()));
 });
 test("archived writer record uses parser lifecycle fields and retains a valid successor contract", async () => {
   const successor = data.adapters.cctp;
-  const record = await buildRecord({
-    ...env(),
-    HYPERION_STATUS: "archived",
-    HYPERION_SUCCESSOR_ROUTER: successor,
-    HYPERION_ARCHIVE_REASON: "Replaced deployment",
-  });
+  const record = await buildRecord(
+    {
+      ...env(),
+      HYPERION_STATUS: "archived",
+      HYPERION_SUCCESSOR_ROUTER: successor,
+      HYPERION_ARCHIVE_REASON: "Replaced deployment",
+    },
+    evidence(),
+  );
   const archived = record.networks["stellar-testnet"];
   assert.equal(archived.status, "archived");
   assert.equal(archived.reason, "Replaced deployment");
   assert.equal(archived.successorRouter, successor);
   await assert.rejects(buildReport({ toRecord: record }), /archived/);
 });
-test("writer live ledger query checks RPC network and exact ledger bounds", async () => {
+test("writer binds initialization position to the live network and exact transaction evidence", async () => {
   const values = env();
-  delete values.HYPERION_ROUTER_LEDGER;
   for (const sequence of [0, 1.5, 2 ** 53, 0x100000000, "100"])
     await assert.rejects(
       buildRecord(values, {
         rpc: async (method) =>
           method === "getNetwork"
             ? { passphrase: data.networkPassphrase }
-            : { sequence },
+            : {
+                status: "SUCCESS",
+                ledger: sequence,
+                envelopeXdr: "fixture",
+                createdAt: "2026-10-28T17:08:25Z",
+              },
       }),
       /ledger/,
     );
@@ -121,7 +149,17 @@ test("writer live ledger query checks RPC network and exact ledger bounds", asyn
     rpc: async (method) =>
       method === "getNetwork"
         ? { passphrase: data.networkPassphrase }
-        : { sequence: 100 },
+        : {
+            status: "SUCCESS",
+            ledger: 100,
+            envelopeXdr: "fixture",
+            createdAt: "2026-10-28T17:08:25Z",
+          },
+    verifyEnvelope: () => ({ hash: "a".repeat(64), source: data.admin }),
   });
   assert.equal(record.networks["stellar-testnet"].deployedAt.ledger, 100);
+  assert.deepEqual(record.networks["stellar-testnet"].positions, {
+    initialization: { ledger: 100, txHash: "a".repeat(64) },
+    activation: [],
+  });
 });

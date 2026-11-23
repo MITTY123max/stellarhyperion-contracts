@@ -83,6 +83,9 @@ note "using deterministic provider fault schedule (seed ${HYPERION_FAULT_SEED})"
 ( cd "$EVM_DIR" && forge test --match-contract RouterProviderFaultTest --fuzz-seed "$HYPERION_FAULT_SEED" ) \
   > /tmp/hyperion-provider-faults.log 2>&1 \
   || { tail -30 /tmp/hyperion-provider-faults.log; die "seeded provider rollback/retry rehearsal"; }
+( cd "$EVM_DIR" && forge test --match-contract ReplayIdentityCollisionTest ) \
+  > /tmp/hyperion-replay-identities.log 2>&1 \
+  || { tail -30 /tmp/hyperion-replay-identities.log; die "full-width replay-identity collision corpus"; }
 ( cd "$EVM_DIR" && mkdir -p deployments && forge script script/LocalRails.s.sol --rpc-url "$RPC" --broadcast --unlocked --sender "$SENDER" >/tmp/hyperion-rails.log 2>&1 ) \
   || { tail -30 /tmp/hyperion-rails.log; die "LocalRails"; }
 
@@ -140,7 +143,6 @@ sleep 2
 note "phase two: execute"
 ( cd "$EVM_DIR" && forge script script/Execute.s.sol --rpc-url "$RPC" --broadcast --unlocked --sender "$SENDER" 2>&1 ) \
   | grep -E '^  (executed|already done|CCTP)' || die "Execute"
-
 note "phase two again, to prove it is idempotent"
 ( cd "$EVM_DIR" && forge script script/Execute.s.sol --rpc-url "$RPC" --unlocked --sender "$SENDER" 2>&1 ) \
   | grep -E '^  (executed this run|already done)' || die "Execute is not idempotent"

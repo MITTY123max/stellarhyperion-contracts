@@ -10,6 +10,7 @@ contract HyperionRouter
 status active
 # Public callable methods, sorted.
 method archive_settled_claims
+method audit_claim
 method bridge_in
 method bridge_out
 method bridge_out_batch

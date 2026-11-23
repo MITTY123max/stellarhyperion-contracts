@@ -629,7 +629,7 @@ fn read_persistent_val(env: &Env, key: &Val) -> Option<Val> {
     env.storage().persistent().get(key)
 }
 
-fn read_persistent<T>(env: &Env, key: &Val) -> Option<T>
+pub(crate) fn read_persistent<T>(env: &Env, key: &Val) -> Option<T>
 where
     T: TryFromVal<Env, Val>,
     T::Error: core::fmt::Debug,

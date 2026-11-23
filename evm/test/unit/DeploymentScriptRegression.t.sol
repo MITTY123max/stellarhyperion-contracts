@@ -21,6 +21,20 @@ contract GuardianEvidenceHarness is Verify {
     }
 }
 
+// Unit fixtures have no RPC fork. Supply an explicit public genesis identity while
+// the real deployment rehearsal exercises canonical header retrieval.
+contract GenesisExecuteHarness is Execute {
+    function observedGenesisBlockHash() internal pure override returns (bytes32) {
+        return bytes32(uint256(9));
+    }
+}
+
+contract GenesisVerifyHarness is Verify {
+    function observedGenesisBlockHash() internal pure override returns (bytes32) {
+        return bytes32(uint256(9));
+    }
+}
+
 contract DeploymentScriptRegressionTest is Fixture {
     string private constant RECORD = "deployments/unit-execution-record.json";
 
@@ -42,7 +56,7 @@ contract DeploymentScriptRegressionTest is Fixture {
         vm.setEnv("HYPERION_CCTP_ARTIFACT_HASH", vm.toString(keccak256(type(CctpAdapter).creationCode)));
         vm.setEnv("CCTP_TOKEN_MESSENGER_CODE_HASH", vm.toString(bytes32(uint256(1))));
         vm.setEnv("CCTP_MESSAGE_TRANSMITTER_CODE_HASH", vm.toString(bytes32(uint256(2))));
-        Verify verify = new Verify();
+        Verify verify = new GenesisVerifyHarness();
         uint64 count = router.actionCount();
         verify.run();
         assertEq(router.actionCount(), count);
@@ -70,6 +84,7 @@ contract DeploymentScriptRegressionTest is Fixture {
         string memory path = "deployments/unit-unsigned-verification-record.json";
         vm.setEnv("HYPERION_RECORD", path);
         vm.serializeUint(key, "chainId", block.chainid);
+        vm.serializeBytes32(key, "genesisBlockHash", bytes32(uint256(9)));
         vm.serializeAddress(key, "router", address(router));
         vm.serializeAddress(key, "cctpAdapter", address(0xCC70));
         vm.serializeAddress(key, "token", address(usdc));
@@ -108,7 +123,7 @@ contract DeploymentScriptRegressionTest is Fixture {
         uint64 id = fresh.queueAction(action);
         _record(fresh, id);
         vm.setEnv("HYPERION_REPORT_ONLY", "true");
-        Execute execute = new Execute();
+        Execute execute = new GenesisExecuteHarness();
         execute.run();
         assertFalse(fresh.queuedAction(id).executed);
         assertEq(fresh.feeBps(), FEE_BPS);
@@ -124,7 +139,7 @@ contract DeploymentScriptRegressionTest is Fixture {
         _record(fresh, id);
         vm.setEnv("HYPERION_REPORT_ONLY", "false");
         vm.warp(block.timestamp + TIMELOCK + 1);
-        Execute execute = new Execute();
+        Execute execute = new GenesisExecuteHarness();
         vm.expectRevert("record token has no code");
         execute.run();
         assertFalse(fresh.queuedAction(id).executed);
@@ -134,7 +149,7 @@ contract DeploymentScriptRegressionTest is Fixture {
     function _actionIdBeyondUint64IsRejectedBeforeReportOrBroadcast() private {
         _record(router, uint256(type(uint64).max) + 1);
         vm.setEnv("HYPERION_REPORT_ONLY", "true");
-        Execute execute = new Execute();
+        Execute execute = new GenesisExecuteHarness();
         vm.expectRevert("action id exceeds uint64");
         execute.run();
         vm.setEnv("HYPERION_REPORT_ONLY", "false");
@@ -194,7 +209,9 @@ contract DeploymentScriptRegressionTest is Fixture {
         vm.writeFile(
             RECORD,
             string.concat(
-                "{\"chainId\":",
+                "{\"genesisBlockHash\":\"",
+                vm.toString(bytes32(uint256(9))),
+                "\",\"chainId\":",
                 vm.toString(block.chainid),
                 ",\"router\":\"",
                 vm.toString(address(target)),

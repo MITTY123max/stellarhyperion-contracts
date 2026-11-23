@@ -20,6 +20,7 @@ mod maintenance;
 mod operations;
 mod outbound;
 mod quotes;
+mod replay_identity;
 mod stateful_model;
 mod storage_maintenance;
 mod trust_surface;

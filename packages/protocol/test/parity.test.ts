@@ -549,6 +549,38 @@ describe("the deterministic provider fault fixtures", () => {
   });
 });
 
+describe("the replay-identity collision corpus", () => {
+  it("keeps every full-width identifier distinct through the Rust and EVM harnesses", () => {
+    const vectors = read(join(repoRoot, "testdata", "replay-identity-collision-corpus.tsv"))
+      .split(/\r?\n/)
+      .filter((line) => line.length > 0 && !line.startsWith("#"))
+      .map((line) => {
+        const [name, route, id, displayNonce] = line.split("|");
+        return { name, route, id, displayNonce };
+      });
+    const ids = vectors.map(({ id }) => id);
+    expect(vectors.length).toBeGreaterThanOrEqual(2);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(vectors.every(({ route }) => route === "cctp")).toBe(true);
+    expect(vectors.every(({ id }) => /^0x[0-9a-f]{64}$/.test(id ?? ""))).toBe(true);
+    expect(new Set(vectors.map(({ id }) => id!.slice(2, 18))).size).toBe(1);
+    expect(new Set(vectors.map(({ id }) => id!.slice(-16))).size).toBe(1);
+    expect(new Set(vectors.map(({ displayNonce }) => displayNonce)).size).toBe(1);
+
+    const rust = read(join(sorobanRouterSrc, "test", "replay_identity.rs"));
+    const rustDouble = read(join(sorobanRouterSrc, "test", "doubles.rs"));
+    const solidity = read(join(evmTest, "unit", "ReplayIdentityCollision.t.sol"));
+    const fixture = read(join(evmTest, "Fixture.sol"));
+    const e2e = read(resolve(packageRoot, "..", "..", "script", "anvil-e2e.sh"));
+    expect(rust).toMatch(/replay-identity-collision-corpus\.tsv/);
+    expect(rust).toMatch(/to_array\(\)/);
+    expect(rustDouble).toMatch(/message_id:\s*BytesN<32>/);
+    for (const id of ids) expect(solidity.toLowerCase()).toContain(id!.toLowerCase());
+    expect(fixture).toMatch(/function _replayOrigin\(bytes32 messageId/);
+    expect(e2e).toMatch(/--match-contract ReplayIdentityCollisionTest/);
+  });
+});
+
 describe("the hostile Soroban token and receiver fixtures", () => {
   const variants = (source: string, name: string): string[] => {
     const body = new RegExp(`pub enum ${name}\\s*\\{([^}]*)\\}`, "s").exec(source)?.[1] ?? "";

@@ -486,3 +486,20 @@ message hash covers post-pool vUSD, while the source record retains token units.
 derive that full provider digest from these fields, and never invents a vUSD amount or message hash.
 The original source nonce, token, amount, destination chain, recipient word and receive-token word
 remain unchanged in every returned record.
+
+`audit_inbound` is a read-only comparison for inbound evidence. It verifies the configured
+validator's signature over the exact Allbridge message, compares optional provider fields against
+that signed intent, and can compare a router claim plus its message-id provenance. The report is
+`verified` only when those comparisons agree and the claim is settled. Missing provider evidence,
+unsettled claims, direct payouts with no stored claim, and legacy claims without provenance remain
+unresolved; an amount, recipient or message-id mismatch prevents a verified report. The trust
+assumption is always reported as unresolved: provider fields are supplied by the report caller and
+are not independently authenticated by this contract. Thus `verified` describes consistency, not
+independent validation of Allbridge's validator authority or source records. The router's
+`audit_claim` view deliberately reads without extending claim TTL.
+The operation does not submit a payout, mark a message processed, write adapter or router storage,
+or change validators. It adds no storage key and changes no inbound wire format. Existing
+deployments need no migration; clients that consume the report must tolerate its explicit
+unresolved state and must not interpret a consistency result as an activation signal. The active
+deployment remains Stellar Testnet outbound ITS/CCTP; Allbridge, EVM and other rail development
+remain gated until independently validated.

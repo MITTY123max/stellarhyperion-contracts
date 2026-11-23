@@ -19,7 +19,7 @@
  */
 import type { Hex } from "./bytes.js";
 import type { ChainKey } from "./chains.js";
-import { chain, isChainKey } from "./chains.js";
+import { chain as chainConfig, isChainKey } from "./chains.js";
 import type { AssetIdentity, AssetRepresentation } from "./registry/assets.js";
 import { RouteKind } from "./routes.js";
 import { ROUTE_KINDS, ROUTE_SLUGS, tryRouteFromSlug } from "./routes.js";
@@ -42,6 +42,27 @@ export interface DeployedAtEvm {
 export interface DeployedAtStellar {
   readonly ledger: number;
   readonly timestamp: string;
+}
+
+export interface EvmTransactionPosition {
+  readonly blockNumber: string;
+  readonly blockHash: Hex;
+  readonly txHash: Hex;
+}
+
+export interface EvmDeploymentPositions {
+  readonly initialization: EvmTransactionPosition | null;
+  readonly activation: readonly EvmTransactionPosition[];
+}
+
+export interface StellarTransactionPosition {
+  readonly ledger: number;
+  readonly txHash: string;
+}
+
+export interface StellarDeploymentPositions {
+  readonly initialization: StellarTransactionPosition | null;
+  readonly activation: readonly StellarTransactionPosition[];
 }
 
 export interface EvmTokenDeployment {
@@ -93,6 +114,9 @@ export interface EvmDeployment extends DeploymentLifecycle {
   readonly family: "evm";
   readonly chain: ChainKey;
   readonly chainId: number;
+  /** Public genesis hash binding this record to a network, beyond its chain ID. */
+  readonly genesisBlockHash?: Hex;
+  readonly positions: EvmDeploymentPositions;
   readonly router: Hex;
   readonly adapters: Readonly<Partial<Record<RouteKind, Hex>>>;
   /** Keyed by symbol, because that is what a person picks from a list. */
@@ -105,6 +129,7 @@ export interface EvmDeployment extends DeploymentLifecycle {
   readonly flowWindow: number;
   readonly timelockDelay: number;
   readonly deployedAt: DeployedAtEvm;
+  readonly evidenceLimitations: readonly string[];
   /** The commit the bytecode was built from. The only thing tying an address to a source tree. */
   readonly commit: string;
 }
@@ -126,6 +151,10 @@ export interface StellarDeployment extends DeploymentLifecycle {
   /** Hex hashes of the uploaded WASM, one per contract, so an installed build is identifiable. */
   readonly wasmHashes: Readonly<Record<string, string>>;
   readonly deployedAt: DeployedAtStellar;
+  /** Public transaction evidence, separated by the two activation phases. */
+  readonly positions: StellarDeploymentPositions;
+  /** Limitations are explicit for legacy and phase-one-only records. */
+  readonly evidenceLimitations: readonly string[];
   readonly commit: string;
 }
 
@@ -371,6 +400,11 @@ function readEvmDeployment(
   chain: ChainKey,
   path: string,
 ): EvmDeployment {
+  const expectedChain = chainConfig(chain);
+  const chainId = asInteger(raw.chainId, `${path}.chainId`, 1);
+  if (expectedChain.family !== "evm" || chainId !== expectedChain.chainId) {
+    fail(`${path}.chainId`, "does not match the selected chain");
+  }
   const adapters = asAdapters(raw.adapters, `${path}.adapters`, asEvmAddress);
   const tokensRaw = asRecord(raw.tokens, `${path}.tokens`);
   const tokens: Record<string, EvmTokenDeployment> = {};
@@ -400,10 +434,38 @@ function readEvmDeployment(
   }
 
   const deployedAt = asRecord(raw.deployedAt, `${path}.deployedAt`);
+  const positionsRaw =
+    raw.positions === undefined ? null : asRecord(raw.positions, `${path}.positions`);
+  const initializationRaw =
+    positionsRaw?.initialization === undefined || positionsRaw.initialization === null
+      ? null
+      : asRecord(positionsRaw.initialization, `${path}.positions.initialization`);
+  const activationRaw = positionsRaw?.activation === undefined ? [] : positionsRaw.activation;
+  if (!Array.isArray(activationRaw) || activationRaw.length > 128) {
+    fail(`${path}.positions.activation`, "expected a bounded transaction array");
+  }
+  function readPosition(value: unknown, positionPath: string): EvmTransactionPosition {
+    const position = asRecord(value, positionPath);
+    return {
+      blockNumber: asUintString(position.blockNumber, `${positionPath}.blockNumber`),
+      blockHash: asHash(position.blockHash, `${positionPath}.blockHash`),
+      txHash: asHash(position.txHash, `${positionPath}.txHash`),
+    };
+  }
+  const initialization = initializationRaw
+    ? readPosition(initializationRaw, `${path}.positions.initialization`)
+    : null;
+  const activation = activationRaw.map((position, index) =>
+    readPosition(position, `${path}.positions.activation[${String(index)}]`),
+  );
   return {
     family: "evm",
     chain,
-    chainId: asInteger(raw.chainId, `${path}.chainId`, 1),
+    chainId,
+    ...(raw.genesisBlockHash === undefined
+      ? {}
+      : { genesisBlockHash: asHash(raw.genesisBlockHash, `${path}.genesisBlockHash`) }),
+    positions: { initialization, activation },
     router: asEvmAddress(raw.router, `${path}.router`),
     adapters,
     tokens,
@@ -418,6 +480,13 @@ function readEvmDeployment(
       timestamp: asTimestamp(deployedAt.timestamp, `${path}.deployedAt.timestamp`),
       txHash: asHash(deployedAt.txHash, `${path}.deployedAt.txHash`),
     },
+    evidenceLimitations: [
+      ...(raw.genesisBlockHash === undefined
+        ? ["genesis-block network binding unavailable in legacy record"]
+        : []),
+      ...(initialization ? [] : ["initialization transaction evidence unavailable"]),
+      ...(activation.length ? [] : ["activation transaction evidence unavailable"]),
+    ],
     commit: asString(raw.commit, `${path}.commit`),
     ...readLifecycle(raw, path),
   };
@@ -428,6 +497,13 @@ function readStellarDeployment(
   chain: ChainKey,
   path: string,
 ): StellarDeployment {
+  const expectedChain = chainConfig(chain);
+  if (
+    expectedChain.family !== "stellar" ||
+    raw.networkPassphrase !== expectedChain.networkPassphrase
+  ) {
+    fail(`${path}.networkPassphrase`, "does not match the selected Stellar network");
+  }
   const adapters = asAdapters(raw.adapters, `${path}.adapters`, asStellarContract);
   const tokensRaw = asRecord(raw.tokens, `${path}.tokens`);
   const tokenEntries = Object.entries(tokensRaw);
@@ -483,6 +559,37 @@ function readStellarDeployment(
   }
 
   const deployedAt = asRecord(raw.deployedAt, `${path}.deployedAt`);
+  const positionsRaw =
+    raw.positions === undefined ? null : asRecord(raw.positions, `${path}.positions`);
+  const initializationRaw =
+    positionsRaw?.initialization === undefined || positionsRaw.initialization === null
+      ? null
+      : asRecord(positionsRaw.initialization, `${path}.positions.initialization`);
+  const activationRaw = positionsRaw?.activation === undefined ? [] : positionsRaw.activation;
+  if (!Array.isArray(activationRaw) || activationRaw.length > 128) {
+    fail(`${path}.positions.activation`, "expected a bounded transaction array");
+  }
+  function readPosition(value: unknown, positionPath: string): StellarTransactionPosition {
+    const position = asRecord(value, positionPath);
+    const txHash = asString(position.txHash, `${positionPath}.txHash`);
+    if (!/^[0-9a-f]{64}$/.test(txHash)) {
+      fail(`${positionPath}.txHash`, "expected 64 lowercase hex characters");
+    }
+    return {
+      ledger: asInteger(position.ledger, `${positionPath}.ledger`, 1),
+      txHash,
+    };
+  }
+  const initialization = initializationRaw
+    ? readPosition(initializationRaw, `${path}.positions.initialization`)
+    : null;
+  const activation = activationRaw.map((position, index) =>
+    readPosition(position, `${path}.positions.activation[${String(index)}]`),
+  );
+  const evidenceLimitations = [
+    ...(initialization ? [] : ["initialization transaction evidence unavailable"]),
+    ...(activation.length ? [] : ["activation transaction evidence unavailable"]),
+  ];
   return {
     family: "stellar",
     chain,
@@ -501,6 +608,8 @@ function readStellarDeployment(
       ledger: asInteger(deployedAt.ledger, `${path}.deployedAt.ledger`, 1),
       timestamp: asTimestamp(deployedAt.timestamp, `${path}.deployedAt.timestamp`),
     },
+    positions: { initialization, activation },
+    evidenceLimitations,
     commit: asString(raw.commit, `${path}.commit`),
     ...readLifecycle(raw, path),
   };
@@ -699,10 +808,11 @@ export function parseDeploymentSet(value: unknown): DeploymentSet {
     const record = asRecord(entry, path);
     const family = record.family;
     if (family === "evm") {
-      if (chain(key).family !== "evm") fail(`${path}.family`, "does not match the chain family");
+      if (chainConfig(key).family !== "evm")
+        fail(`${path}.family`, "does not match the chain family");
       networks[key] = readEvmDeployment(record, key, path);
     } else if (family === "stellar") {
-      if (chain(key).family !== "stellar") {
+      if (chainConfig(key).family !== "stellar") {
         fail(`${path}.family`, "does not match the chain family");
       }
       networks[key] = readStellarDeployment(record, key, path);

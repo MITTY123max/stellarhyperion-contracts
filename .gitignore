@@ -19,6 +19,7 @@ evm/.gas-snapshot.tmp
 # Node
 node_modules/
 dist/
+packages/protocol/release/
 *.tsbuildinfo
 .pnpm-store/
 

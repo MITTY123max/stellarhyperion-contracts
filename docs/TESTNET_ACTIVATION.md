@@ -625,3 +625,46 @@ those queued prerequisites have executed. Its report-only path requires the corr
 and bounded uint64 IDs but starts no broadcast. Verification compares actual artifact metadata
 against the deployment record. A zero-guardian policy requires complete role grant/revoke history
 from before deployment plus matching live role state; unavailable or excessive history fails closed.
+
+## Network-bound deployment evidence (#135)
+
+Stellar deployment scripts verify the selected CLI network passphrase before any upload,
+initialization, link, phase-two action, or verification read. `write-record.mjs` independently
+checks the configured RPC passphrase, requires the public router-initialization transaction hash,
+and confirms that transaction succeeded and landed at the recorded ledger. The phase-one record
+keeps that evidence under `positions.initialization`; each confirmed phase-two action is appended
+separately under `positions.activation` by `record-position.mjs`. If a process stops after a
+confirmed action but before recording its position, recover the transaction hash from the public
+RPC/journal and run:
+
+```sh
+node script/stellar/record-position.mjs deployments/stellar-testnet-phase1.json \
+  activation <confirmed-transaction-hash>
+```
+
+EVM phase-one records bind both `chainId` and the RPC's public genesis block hash. EVM phase two
+refuses records without the matching genesis hash, so a fork or a same-ID network cannot receive
+activation writes. `Verify.s.sol` compares the recorded fingerprint with the selected RPC. Bind
+the public router-creation receipt after phase one and router activation receipts after phase two:
+
+```sh
+node evm/script/record-evidence.mjs initialization \
+  evm/deployments/evm-<chain-id>-phase1.json \
+  evm/broadcast/Deploy.s.sol/<chain-id>/run-latest.json
+node evm/script/record-evidence.mjs activation \
+  evm/deployments/evm-<chain-id>-phase1.json \
+  evm/broadcast/Execute.s.sol/<chain-id>/run-latest.json
+```
+
+The writer checks `eth_chainId`, the genesis block, each transaction receipt, and its canonical
+block before appending distinct `positions.initialization` and `positions.activation` entries.
+Set `HYPERION_RPC_URL` or `RPC_URL` to the same reviewed endpoint used by Forge.
+
+Compatibility: historical Stellar records without transaction positions continue to parse; the
+protocol reader returns explicit `evidenceLimitations` rather than implying their initialization
+or activation transactions were independently recorded. Rewriting a phase-one record requires
+`HYPERION_INITIALIZATION_TX_HASH` (automatically extracted from the initialization CLI result when
+available) and live RPC confirmation, including the envelope hash and deployer. Historical EVM records without `genesisBlockHash` remain inspectable by the
+verifier with a warning, but cannot be used by the phase-two script until the operator performs a
+reviewed network rebinding. Rebinding does not establish that historical transactions occurred;
+retain and review the original public transaction evidence separately.

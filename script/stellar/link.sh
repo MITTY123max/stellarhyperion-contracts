@@ -42,6 +42,7 @@ fi
 
 CHAIN_KEY=$(node -e 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(Object.keys(d.networks??{})[0]??"")' "$RECORD")
 [ -n "$CHAIN_KEY" ] || die "the record names no network"
+assert_record_network "$RECORD" "$CHAIN_KEY"
 
 PEER="$(peer_chain)"
 SAC=$(node -e 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const t=d.networks[process.argv[2]].tokens;process.stdout.write(t[Object.keys(t)[0]].sacId)' "$RECORD" "$CHAIN_KEY")

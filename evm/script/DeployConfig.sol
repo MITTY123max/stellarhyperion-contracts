@@ -149,6 +149,17 @@ abstract contract DeployConfig is Script {
         _verifiedArtifactProfile(vm.getArtifactPathByCode(type(AxelarItsAdapter).creationCode));
     }
 
+    /// @dev Chain IDs can be shared by forks. Bind EVM deployment artifacts to the RPC's public
+    /// genesis block as well, so a same-ID fork cannot silently receive a desired record.
+    function observedGenesisBlockHash() internal view virtual returns (bytes32) {
+        // The pinned Foundry version exposes the canonical RLP header, not rpcJson.
+        bytes memory genesisHeader = vm.getRawBlockHeader(0);
+        require(genesisHeader.length != 0, "RPC returned no genesis block header");
+        bytes32 genesisHash = keccak256(genesisHeader);
+        require(genesisHash != bytes32(0), "RPC returned no genesis block hash");
+        return genesisHash;
+    }
+
     function railParams() internal view returns (RailParams memory params) {
         params = RailParams({
             cctpTokenMessenger: vm.envAddress("CCTP_TOKEN_MESSENGER"),

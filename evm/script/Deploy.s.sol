@@ -206,6 +206,7 @@ contract Deploy is DeployConfig {
         string memory key = "hyperion";
 
         vm.serializeUint(key, "chainId", block.chainid);
+        vm.serializeBytes32(key, "genesisBlockHash", observedGenesisBlockHash());
         CompatibilityProfile memory profile =
             _verifiedArtifactProfile(vm.getArtifactPathByCode(type(HyperionRouter).creationCode));
         vm.serializeString(key, "evmVersion", profile.evmVersion);

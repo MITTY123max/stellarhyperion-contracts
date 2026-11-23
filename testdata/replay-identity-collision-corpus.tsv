@@ -1,0 +1,4 @@
+# name|route|provider_message_id|display_nonce
+same-prefix-a|cctp|0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa000000000000002a|42
+same-prefix-b|cctp|0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab000000000000002a|42
+same-prefix-c|cctp|0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaac000000000000002a|42

@@ -32,6 +32,7 @@ const keys=Object.keys(d.networks??{});
 if(keys.length!==1){console.error("expected exactly one network in the record, found "+keys.length);process.exit(1)}
 process.stdout.write(keys[0]);
 ' "$RECORD")
+assert_record_network "$RECORD" "$CHAIN_KEY"
 
 ROUTER=$(json_get "$RECORD" "networks.$CHAIN_KEY.router")
 DEPLOYER=$(json_get "$RECORD" "networks.$CHAIN_KEY.deployer")
@@ -77,6 +78,11 @@ for i in $(seq 0 $((COUNT - 1))); do
   fi
 
   if out=$(invoke "$ROUTER" execute_action --caller "$CALLER" --id "$id" 2>&1); then
+    ACTIVATION_TX_HASH=$(transaction_hash_from_output "$out")
+    [ -n "$ACTIVATION_TX_HASH" ] || die "action $id succeeded but its transaction hash was not reported; reconcile public transaction evidence before continuing"
+    node "$CONTRACTS_ROOT/script/stellar/record-position.mjs" \
+      "$RECORD" activation "$ACTIVATION_TX_HASH" \
+      || die "action $id succeeded but its public activation position could not be recorded"
     say "executed      $id  $what"
     executed=$((executed + 1))
   else

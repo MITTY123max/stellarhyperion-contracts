@@ -170,3 +170,48 @@ reuse_or_deploy() {
 
 # Hyperion's own name for the EVM chain this deployment is paired with.
 peer_chain() { echo "${HYPERION_PEER_CHAIN:?set HYPERION_PEER_CHAIN, for example arc-testnet}"; }
+
+expected_network_passphrase() {
+  case "$NETWORK" in
+    testnet) printf '%s' 'Test SDF Network ; September 2015' ;;
+    mainnet|public) printf '%s' 'Public Global Stellar Network ; September 2015' ;;
+    *) die "unsupported Stellar network alias: $NETWORK" ;;
+  esac
+}
+
+assert_selected_network() {
+  local expected observed
+  expected=$(expected_network_passphrase)
+  observed=$(stellar network info --network "$NETWORK" --output json \
+    | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const v=JSON.parse(s).passphrase;if(typeof v!=="string"||!v)process.exit(1);process.stdout.write(v)})') \
+    || die "could not observe the selected Stellar network passphrase"
+  [ "$observed" = "$expected" ] \
+    || die "selected Stellar network passphrase does not match $NETWORK; refusing deployment operation"
+}
+
+assert_record_network() {
+  local record="$1" chain_key="$2" recorded observed
+  assert_selected_network
+  recorded=$(json_get "$record" "networks.$chain_key.networkPassphrase")
+  observed=$(expected_network_passphrase)
+  [ "$recorded" = "$observed" ] \
+    || die "record network passphrase does not match selected $NETWORK network"
+}
+
+transaction_hash_from_output() {
+  node -e '
+const raw=process.argv[1]||"";
+let value;
+try { value=JSON.parse(raw); } catch {}
+let hash="";
+function find(v){
+  if(!v||typeof v!=="object")return;
+  for(const key of ["tx_hash","txHash","transactionHash","hash"])
+    if(typeof v[key]==="string"&&/^[0-9a-f]{64}$/i.test(v[key])){hash=v[key].toLowerCase();return}
+  for(const child of Object.values(v))if(!hash)find(child);
+}
+find(value);
+if(!hash)hash=(raw.match(/(?:transaction\s+hash|tx_hash|txHash|transactionHash)\s*[:=]\s*["\x27]?([0-9a-f]{64})/i)||[])[1]?.toLowerCase()||"";
+process.stdout.write(hash);
+' "$1"
+}

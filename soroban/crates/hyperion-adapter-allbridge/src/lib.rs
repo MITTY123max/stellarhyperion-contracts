@@ -89,15 +89,47 @@ use hyperion_core::{
 };
 use soroban_sdk::{
     auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
-    contract, contractimpl, token, vec, Address, Bytes, BytesN, Env, IntoVal, String, Symbol, Vec,
-    U256,
+    contract, contractclient, contractimpl, contracttype, token, vec, Address, Bytes, BytesN, Env,
+    IntoVal, String, Symbol, Vec, U256,
 };
 
 use rail::{AllbridgeBridgeClient, AllbridgeMessengerClient, STELLAR_CHAIN_ID};
 use types::{
-    AssetLink, ChainLane, Config, OutboundRecord, PendingValidator, ProviderStatus,
-    RecoveryDecision, ValidatorEpoch,
+    AssetLink, ChainLane, Config, InboundAuditReport, InboundAuditRequest, OutboundRecord,
+    PendingValidator, ProviderEvidence, ProviderStatus, RecoveryDecision, ValidatorEpoch,
 };
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct AuditClaim {
+    pub id: u64,
+    pub recipient: Address,
+    pub token: Address,
+    pub amount: i128,
+    pub route: RouteKind,
+    pub source_chain: String,
+    pub source_nonce: u64,
+    pub created_at: u64,
+    pub settled: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct AuditClaimProvenance {
+    pub route: RouteKind,
+    pub source_chain: String,
+    pub message_id: BytesN<32>,
+}
+
+#[contractclient(name = "RouterAuditClient")]
+#[expect(
+    dead_code,
+    reason = "This trait generates the client for the deployed router interface"
+)]
+trait RouterAudit {
+    fn audit_claim(env: Env, id: u64) -> Option<AuditClaim>;
+    fn get_claim_provenance(env: Env, id: u64) -> Option<AuditClaimProvenance>;
+}
 
 #[contract]
 pub struct AllbridgeAdapter;
@@ -399,12 +431,6 @@ impl AllbridgeAdapter {
             }),
         ]);
 
-        let mut nonce_bytes = [0u8; 32];
-        nonce.to_be_bytes().copy_into_slice(&mut nonce_bytes);
-        let mut tail = [0u8; 8];
-        tail.copy_from_slice(&nonce_bytes[24..32]);
-        let display_nonce = u64::from_be_bytes(tail);
-
         let claim_id = RouterClient::new(&env, &cfg.router).bridge_in(
             &this,
             &RouteKind::Allbridge,
@@ -417,7 +443,7 @@ impl AllbridgeAdapter {
             },
             &Origin {
                 chain: source_chain.clone(),
-                nonce: display_nonce,
+                nonce: display_nonce(&nonce),
                 message_id: message_id.clone(),
                 sender: BytesN::from_array(&env, &[0u8; 32]),
             },
@@ -1002,11 +1028,137 @@ impl AllbridgeAdapter {
         })
     }
 
+    /// Compare a signed inbound intent with caller-supplied provider evidence and a router claim.
+    ///
+    /// This view never extends storage TTLs or changes adapter or router state. `verified` means
+    /// the configured validator signature and all supplied fields agree; provider evidence itself
+    /// is not independently authenticated by this contract.
+    pub fn audit_inbound(
+        env: Env,
+        request: InboundAuditRequest,
+    ) -> Result<InboundAuditReport, HyperionError> {
+        let cfg = storage::config(&env)?;
+        let intent = request.intent;
+        if intent.amount <= 0 {
+            return Err(HyperionError::InvalidAmount);
+        }
+
+        let validator = active_validator(&env)?;
+        let source_chain =
+            storage::chain_of(&env, intent.source_chain_id).ok_or(HyperionError::UnknownChain)?;
+        let asset_key = storage::DataKey::Asset(intent.token.clone(), intent.source_chain_id);
+        let asset: Option<AssetLink> = env.storage().persistent().get(&asset_key);
+        if asset.is_none() {
+            return Err(HyperionError::TokenNotMapped);
+        }
+
+        let (kind, recipient_key) = codec::address_key(&env, &intent.recipient)?;
+        assert_route_supports(RouteKind::Allbridge, kind)?;
+        let amount = u128::try_from(intent.amount).map_err(|_| HyperionError::InvalidAmount)?;
+        let recipient = BytesN::from_array(&env, &recipient_key);
+        let receive_token = BytesN::from_array(&env, &codec::contract_key(&env, &intent.token)?);
+        let message_id = rail::hash_message(
+            &env,
+            amount,
+            &recipient,
+            intent.source_chain_id,
+            STELLAR_CHAIN_ID,
+            &receive_token,
+            &intent.nonce,
+        );
+        let digest = rail::validator_attestation_digest(
+            &env,
+            &env.current_contract_address(),
+            &validator,
+            &message_id,
+        )?;
+        env.crypto()
+            .ed25519_verify(&validator.validator, &digest.into(), &intent.signature);
+
+        let provider_evidence_present =
+            matches!(&request.provider_evidence, ProviderEvidence::Present(_));
+        let provider_matches_intent = match request.provider_evidence {
+            ProviderEvidence::Missing => false,
+            ProviderEvidence::Present(evidence) => {
+                evidence.amount == amount
+                    && evidence.recipient == recipient
+                    && evidence.source_chain_id == intent.source_chain_id
+                    && evidence.destination_chain_id == STELLAR_CHAIN_ID
+                    && evidence.receive_token == receive_token
+                    && evidence.nonce == intent.nonce
+                    && evidence.message_id == message_id
+            }
+        };
+
+        let (
+            payout_record_present,
+            payout_provenance_present,
+            payout_matches_intent,
+            payout_settled,
+        ) = if let Some(claim_id) = request.claim_id {
+            let router = RouterAuditClient::new(&env, &cfg.router);
+            let claim = router.audit_claim(&claim_id);
+            let provenance = router.get_claim_provenance(&claim_id);
+            let claim_matches = claim.as_ref().is_some_and(|claim| {
+                claim.id == claim_id
+                    && claim.route == RouteKind::Allbridge
+                    && claim.recipient == intent.recipient
+                    && claim.token == intent.token
+                    && claim.amount == intent.amount
+                    && claim.source_chain == source_chain
+                    && claim.source_nonce == display_nonce(&intent.nonce)
+            });
+            let provenance_matches = provenance.as_ref().is_some_and(|provenance| {
+                provenance.route == RouteKind::Allbridge
+                    && provenance.source_chain == source_chain
+                    && provenance.message_id == message_id
+            });
+            let payout_record_present = claim.is_some();
+            let payout_provenance_present = provenance.is_some();
+            let payout_settled = claim.as_ref().is_some_and(|claim| claim.settled);
+            (
+                payout_record_present,
+                payout_provenance_present,
+                claim_matches && provenance_matches,
+                payout_settled,
+            )
+        } else {
+            (false, false, false, false)
+        };
+
+        let verified = provider_evidence_present
+            && provider_matches_intent
+            && payout_record_present
+            && payout_matches_intent
+            && payout_settled;
+
+        Ok(InboundAuditReport {
+            message_id,
+            signature_valid: true,
+            provider_evidence_present,
+            provider_matches_intent,
+            payout_record_present,
+            payout_provenance_present,
+            payout_matches_intent,
+            payout_settled,
+            verified,
+            unresolved_trust_assumption: true,
+        })
+    }
+
     /// Check if an inbound message has already been processed.
     pub fn is_processed(env: Env, message_id: BytesN<32>) -> Result<bool, HyperionError> {
         let _ = storage::config(&env)?;
         Ok(storage::is_processed(&env, &message_id))
     }
+}
+
+fn display_nonce(nonce: &U256) -> u64 {
+    let mut nonce_bytes = [0u8; 32];
+    nonce.to_be_bytes().copy_into_slice(&mut nonce_bytes);
+    let mut tail = [0u8; 8];
+    tail.copy_from_slice(&nonce_bytes[24..32]);
+    u64::from_be_bytes(tail)
 }
 
 /// Read the config and insist the admin signed for whatever is about to happen.

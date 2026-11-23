@@ -10,6 +10,7 @@ contract AllbridgeAdapter
 status gated
 # Public callable methods, sorted.
 method activate_validator_rotation
+method audit_inbound
 method bridge_in
 method cancel_validator_rotation
 method chain_for

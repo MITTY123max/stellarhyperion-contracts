@@ -335,18 +335,18 @@ pub struct OutboundRequest {
     pub min_destination_amount: i128,
 }
 
-/// Optional preconditions validated before dispatch.
+// Optional preconditions validated before dispatch.
 #[contracttype]
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct OutboundPreconditions {
-    /// Expected 32-byte hash binding route, adapter, fee, and precision. If present and mismatched,
-    /// the transfer is refused before any token debit or state change.
+    // Expected 32-byte hash binding route, adapter, fee, and precision. If present and mismatched,
+    // the transfer is refused before any token debit or state change.
     pub quote_fingerprint: Option<BytesN<32>>,
-    /// Ledger sequence or timestamp boundary after which the request is refused as expired.
+    // Ledger sequence or timestamp boundary after which the request is refused as expired.
     pub deadline: Option<u64>,
 }
 
-/// A single transfer request within an atomic batch operation.
+// A single transfer request within an atomic batch operation.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BatchOutboundItem {
@@ -365,8 +365,8 @@ pub struct Destination {
     // truncating, because a Stellar key that ends up in this field looks perfectly valid
     // once you chop the front off it.
     pub address: BytesN<32>,
-    /// Mapping generation explicitly accepted by the sender for CCTP.
-    /// Other routes ignore this field and use zero.
+    // Mapping generation explicitly accepted by the sender for CCTP.
+    // Other routes ignore this field and use zero.
     pub mapping_revision: u32,
 }
 

@@ -49,6 +49,13 @@ contract Verify is DeployConfig {
         console.log("");
 
         _expectUint("chain id", block.chainid, record.readUint(".chainId"));
+        bytes32 observedGenesis = observedGenesisBlockHash();
+        if (vm.keyExistsJson(record, ".genesisBlockHash")) {
+            _expectBytes32("genesis block hash", record.readBytes32(".genesisBlockHash"), observedGenesis);
+        } else {
+            console.log("WARN legacy record has no genesis-block network binding");
+        }
+        _verifyPublicPositions(record);
         _verifyProvenance(record, router);
         _verifyRecoveryManager(record, router);
         CompatibilityProfile memory profile =
@@ -257,6 +264,78 @@ contract Verify is DeployConfig {
                 TokenRecoveryManager(expected).ROUTER(),
                 address(router)
             );
+        }
+    }
+
+    function _verifyPublicPositions(string memory record) internal {
+        if (!vm.keyExistsJson(record, ".positions.initialization.txHash")) {
+            console.log("WARN legacy record has no public initialization transaction position");
+            return;
+        }
+        _verifyReceiptPosition(record, ".positions.initialization");
+        uint256 index;
+        while (vm.keyExistsJson(
+                record, string.concat(".positions.activation[", vm.toString(index), "].txHash")
+            )) {
+            _verifyReceiptPosition(record, string.concat(".positions.activation[", vm.toString(index), "]"));
+            ++index;
+        }
+        console.log("  ok   initialization receipt");
+        console.log("  ok   activation receipts", index);
+        if (index == 0) console.log("WARN no activation transaction positions are recorded");
+    }
+
+    function _verifyReceiptPosition(string memory record, string memory path) private {
+        string memory txHash = record.readString(string.concat(path, ".txHash"));
+        string memory transaction =
+            vm.rpcJson("eth_getTransactionByHash", string.concat("[\"", txHash, "\"]"));
+        string memory receipt = vm.rpcJson("eth_getTransactionReceipt", string.concat("[\"", txHash, "\"]"));
+        require(bytes(transaction).length > 2, "recorded transaction is unavailable from public RPC");
+        require(bytes(receipt).length > 2, "recorded transaction has no public receipt");
+        _expectAddress(
+            string.concat(path, " sender"),
+            vm.parseJsonAddress(transaction, ".from"),
+            record.readAddress(".deployer")
+        );
+        if (keccak256(bytes(path)) == keccak256(bytes(".positions.initialization"))) {
+            _expectAddress(
+                string.concat(path, " created router"),
+                vm.parseJsonAddress(receipt, ".contractAddress"),
+                record.readAddress(".router")
+            );
+        } else {
+            _expectAddress(
+                string.concat(path, " target router"),
+                vm.parseJsonAddress(transaction, ".to"),
+                record.readAddress(".router")
+            );
+        }
+        _expectString(
+            string.concat(path, " receipt hash"), vm.parseJsonString(receipt, ".transactionHash"), txHash
+        );
+        _expectString(string.concat(path, " receipt status"), vm.parseJsonString(receipt, ".status"), "0x1");
+        _expectString(
+            string.concat(path, " receipt block"),
+            vm.parseJsonString(receipt, ".blockHash"),
+            record.readString(string.concat(path, ".blockHash"))
+        );
+        _expectString(
+            string.concat(path, " block number"),
+            vm.toString(_hexQuantity(vm.parseJsonString(receipt, ".blockNumber"))),
+            record.readString(string.concat(path, ".blockNumber"))
+        );
+    }
+
+    function _hexQuantity(string memory encoded) private pure returns (uint256 value) {
+        bytes memory raw = bytes(encoded);
+        require(raw.length >= 3 && raw[0] == "0" && (raw[1] == "x" || raw[1] == "X"), "invalid RPC quantity");
+        for (uint256 i = 2; i < raw.length; ++i) {
+            uint8 digit = uint8(raw[i]);
+            if (digit >= 48 && digit <= 57) digit -= 48;
+            else if (digit >= 65 && digit <= 70) digit = digit - 65 + 10;
+            else if (digit >= 97 && digit <= 102) digit = digit - 97 + 10;
+            else revert("invalid RPC quantity");
+            value = value * 16 + digit;
         }
     }
 

@@ -336,10 +336,47 @@ because a checksum that only agrees with itself is not a checksum.
 npm install          # the committed lockfile is what CI installs
 npm run gen          # regenerate src/abi from ../../evm/out, after a forge build
 npm run check        # format, lint, typecheck, test, build
+npm run release      # build, create a deterministic archive and provenance manifest
+npm run verify:archive -- path/to/hyperion-protocol-0.1.0.tgz
 ```
 
 `npm run gen` needs `forge build` to have run in `../../evm` first. It reads what the compiler
 produced rather than guessing, and says so if the artifacts are missing.
+
+`npm run release` requires a clean Git tree and runs the normal TypeScript build with npm lifecycle
+hooks disabled. It writes an npm-compatible USTAR `.tgz` under `release/` and a sibling
+`.manifest.json` containing the full Git revision, package version, Node/npm versions, archive
+SHA-256 and sorted path/SHA-256 entries. Archive metadata (mtime, owner, group, mode and order) is
+normalized, so identical packaged files produce identical archive bytes. The release does not
+publish or modify consumer repositories.
+
+`npm run verify:archive -- <archive>` validates the archive structure before reading package
+contents, then compares it with a fresh build and reports changed, missing and extra paths with
+their digests. It rejects duplicate or unsafe paths, links, executable entries and lifecycle
+hooks. It does not install or execute the supplied archive. The `.` and `./abi` exports are smoke
+tested from a temporary extraction of the local clean build, in an isolated consumer directory.
+
+After review, maintainers can synchronize each consumer explicitly by copying the reviewed
+`release/hyperion-protocol-0.1.0.tgz` to that repository's committed archive path and updating its
+lock/reference as appropriate. Rebuild and verify the consumer changes before committing them.
+The manifest proves artifact identity against the recorded source and file digests; it does not
+prove that the source revision is approved for release. That decision remains with maintainer
+review.
+
+For example, from this package directory, set these variables to the existing committed archive
+paths in each consumer repository:
+
+```sh
+export FRONTEND_ARCHIVE=/absolute/path/to/frontend/hyperion-protocol-0.1.0.tgz
+export BACKEND_ARCHIVE=/absolute/path/to/backend/hyperion-protocol-0.1.0.tgz
+cp release/hyperion-protocol-0.1.0.tgz "$FRONTEND_ARCHIVE"
+cp release/hyperion-protocol-0.1.0.tgz "$BACKEND_ARCHIVE"
+npm run verify:archive -- "$FRONTEND_ARCHIVE"
+npm run verify:archive -- "$BACKEND_ARCHIVE"
+```
+
+These are maintainer-run synchronization steps; the release and CI commands never write to either
+consumer repository.
 
 `.npmrc` sets `legacy-peer-deps`, and that is deliberate rather than lazy. viem pulls `abitype`,
 whose peer range is `typescript >=5.0.4`; TypeScript 7 satisfies that while this package pins the

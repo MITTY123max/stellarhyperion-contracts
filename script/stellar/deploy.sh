@@ -29,6 +29,7 @@ if is_dry_run; then
 fi
 require_tools
 require_identity
+assert_selected_network
 
 # Public-only operation journal. Existing uncertain intents are reused instead of resubmitted.
 JOURNAL="${HYPERION_JOURNAL:-$RECORD_DIR/stellar-$NETWORK-operations.json}"
@@ -92,9 +93,16 @@ say "router           $ROUTER"
 # straight to a cold key would mean every queued action below needs that key to sign, in a script,
 # which it cannot do. The deployer queues and executes, and the last queued action hands over.
 note "initializing the router"
-ROUTER_LEDGER=""
+ROUTER_LEDGER="${HYPERION_ROUTER_LEDGER:-${ROUTER_LEDGER:-${STELLAR_START_LEDGER:-}}}"
+ROUTER_INIT_TX_HASH="${HYPERION_INITIALIZATION_TX_HASH:-}"
 if is_initialized "$ROUTER"; then
   say "already initialized, leaving it alone"
+  if [ -z "$ROUTER_INIT_TX_HASH" ] && [ -f "$RECORD_DIR/stellar-$NETWORK-phase1.json" ]; then
+    ROUTER_INIT_TX_HASH=$(node -e '
+const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));
+process.stdout.write(String(d.networks?.["stellar-testnet"]?.positions?.initialization?.txHash??d.networks?.stellar?.positions?.initialization?.txHash??""));
+' "$RECORD_DIR/stellar-$NETWORK-phase1.json")
+  fi
 else
 INIT_OUT=$(invoke "$ROUTER" initialize \
   --admin "$DEPLOYER" \
@@ -104,21 +112,9 @@ INIT_OUT=$(invoke "$ROUTER" initialize \
   --flow_window_ledgers "$FLOW_WINDOW" \
   --timelock_delay "$TIMELOCK" 2>&1) || die "router initialize"
 say "done"
-ROUTER_LEDGER=$(node -e '
-const out = process.argv[1] || "";
-try {
-  const j = JSON.parse(out);
-  if (typeof j.ledger === "number") { process.stdout.write(String(j.ledger)); process.exit(0); }
-  if (typeof j.latestLedger === "number") { process.stdout.write(String(j.latestLedger)); process.exit(0); }
-  if (j.result && typeof j.result.ledger === "number") { process.stdout.write(String(j.result.ledger)); process.exit(0); }
-} catch {}
-const m = out.match(/"ledger"\s*:\s*(\d+)/i) ||
-          out.match(/ledger(?:\s+sequence)?[:\s]+(\d+)/i) ||
-          out.match(/in ledger\s+(\d+)/i);
-if (m) process.stdout.write(m[1]);
-' "$INIT_OUT")
-[ -z "$ROUTER_LEDGER" ] || say "router ledger    $ROUTER_LEDGER"
+ROUTER_INIT_TX_HASH=$(transaction_hash_from_output "$INIT_OUT")
 fi
+[ -n "$ROUTER_INIT_TX_HASH" ] || die "initialization transaction hash is unavailable; set HYPERION_INITIALIZATION_TX_HASH to confirmed public evidence"
 
 # ---------------------------------------------------------------------------------------------
 # Adapters. Not timelocked, because they are owned rather than governed, and an adapter with no
@@ -296,7 +292,6 @@ fi
 
 note "writing the record"
 mkdir -p "$RECORD_DIR"
-ROUTER_LEDGER="${ROUTER_LEDGER:-${STELLAR_START_LEDGER:-${HYPERION_ROUTER_LEDGER:-}}}"
 RECORD="$RECORD_DIR/stellar-$NETWORK-phase1.json"
 
 IDS_JSON=$(printf '%s\n' "${QUEUE_IDS[@]}" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.stringify(s.trim().split("\n").filter(Boolean).map(Number))))')
@@ -319,6 +314,7 @@ HYPERION_FLOW_WINDOW_LEDGERS="$FLOW_WINDOW" \
 HYPERION_TIMELOCK_DELAY="$TIMELOCK" \
 HYPERION_TOKEN_FLOW_LIMIT="$FLOW_LIMIT" \
 HYPERION_PEER_CHAIN="$PEER" \
+HYPERION_INITIALIZATION_TX_HASH="$ROUTER_INIT_TX_HASH" \
 ROUTER_HASH="$ROUTER_HASH" CCTP_HASH="$CCTP_HASH" AXELAR_HASH="$AXELAR_HASH" \
 QUEUE_IDS_JSON="$IDS_JSON" QUEUE_WHAT_JSON="$WHAT_JSON" \
 node "$(dirname "${BASH_SOURCE[0]}")/write-record.mjs" "$RECORD" || die "writing the record"

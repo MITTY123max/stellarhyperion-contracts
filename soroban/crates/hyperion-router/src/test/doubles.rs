@@ -190,71 +190,17 @@ impl MockRail {
     /// The router's error is passed straight back out rather than aborting, so a test can name
     /// the refusal it expects instead of squinting at a generic panic.
     pub fn deliver(env: Env, delivery: Delivery) -> Result<u64, HyperionError> {
-        let Delivery {
-            route,
-            token,
-            amount,
-            recipient,
-            recipient_kind,
-            source_chain,
-            source_nonce,
-        } = delivery;
-        let router: Address = env.storage().instance().get(&RailKey::Router).unwrap();
-        let this = env.current_contract_address();
+        let id = message_id(&env, delivery.source_nonce);
+        deliver_inner(env, delivery, id)
+    }
 
-        // The router pulls rather than trusts, so the receiver has to say in advance that it is
-        // good for the amount. This is the documented way for one contract to authorise a
-        // transfer that a different contract will actually invoke, and it is not covered by
-        // `mock_all_auths`, which only ever stands in for root level signatures.
-        env.authorize_as_current_contract(vec![
-            &env,
-            InvokerContractAuthEntry::Contract(SubContractInvocation {
-                context: ContractContext {
-                    contract: token.clone(),
-                    fn_name: Symbol::new(&env, "transfer"),
-                    args: (this.clone(), router.clone(), amount).into_val(&env),
-                },
-                sub_invocations: vec![&env],
-            }),
-        ]);
-
-        let outcome = HyperionRouterClient::new(&env, &router).try_bridge_in(
-            &this,
-            &route,
-            &token,
-            &amount,
-            &Recipient {
-                address: recipient,
-                kind: recipient_kind,
-                raw: Bytes::new(&env),
-            },
-            &Origin {
-                chain: source_chain,
-                nonce: source_nonce,
-                message_id: message_id(&env, source_nonce),
-                sender: BytesN::from_array(&env, &[7u8; 32]),
-            },
-        );
-
-        match outcome {
-            Ok(Ok(claim_id)) => {
-                // Fault after the nested payout/replay writes proves the whole provider
-                // invocation rolls back atomically, rather than only refusing before work.
-                if env
-                    .storage()
-                    .instance()
-                    .get(&RailKey::FailInbound)
-                    .unwrap_or(false)
-                {
-                    env.panic_with_error(HyperionError::InvalidLimit);
-                }
-                Ok(claim_id)
-            }
-            Err(Ok(err)) => Err(err),
-            // Anything else means the router did not get far enough to name a reason, which on
-            // this path is the token itself refusing the pull. Let it abort loudly.
-            _ => panic!("the router could not take the delivery"),
-        }
+    /// Deliver with an exact provider ID, including any leading zeroes, for replay-collision tests.
+    pub fn deliver_with_message_id(
+        env: Env,
+        delivery: Delivery,
+        message_id: BytesN<32>,
+    ) -> Result<u64, HyperionError> {
+        deliver_inner(env, delivery, message_id)
     }
 
     pub fn last_dispatch(env: Env) -> Result<DispatchRecord, RailError> {
@@ -266,6 +212,78 @@ impl MockRail {
 
     pub fn dispatch_count(env: Env) -> u32 {
         env.storage().instance().get(&RailKey::Count).unwrap_or(0)
+    }
+}
+
+fn deliver_inner(
+    env: Env,
+    delivery: Delivery,
+    provider_id: BytesN<32>,
+) -> Result<u64, HyperionError> {
+    let Delivery {
+        route,
+        token,
+        amount,
+        recipient,
+        recipient_kind,
+        source_chain,
+        source_nonce,
+    } = delivery;
+    let router: Address = env.storage().instance().get(&RailKey::Router).unwrap();
+    let this = env.current_contract_address();
+
+    // The router pulls rather than trusts, so the receiver has to say in advance that it is
+    // good for the amount. This is the documented way for one contract to authorise a
+    // transfer that a different contract will actually invoke, and it is not covered by
+    // `mock_all_auths`, which only ever stands in for root level signatures.
+    env.authorize_as_current_contract(vec![
+        &env,
+        InvokerContractAuthEntry::Contract(SubContractInvocation {
+            context: ContractContext {
+                contract: token.clone(),
+                fn_name: Symbol::new(&env, "transfer"),
+                args: (this.clone(), router.clone(), amount).into_val(&env),
+            },
+            sub_invocations: vec![&env],
+        }),
+    ]);
+
+    let outcome = HyperionRouterClient::new(&env, &router).try_bridge_in(
+        &this,
+        &route,
+        &token,
+        &amount,
+        &Recipient {
+            address: recipient,
+            kind: recipient_kind,
+            raw: Bytes::new(&env),
+        },
+        &Origin {
+            chain: source_chain,
+            nonce: source_nonce,
+            message_id: provider_id,
+            sender: BytesN::from_array(&env, &[7u8; 32]),
+        },
+    );
+
+    match outcome {
+        Ok(Ok(claim_id)) => {
+            // Fault after the nested payout/replay writes proves the whole provider
+            // invocation rolls back atomically, rather than only refusing before work.
+            if env
+                .storage()
+                .instance()
+                .get(&RailKey::FailInbound)
+                .unwrap_or(false)
+            {
+                env.panic_with_error(HyperionError::InvalidLimit);
+            }
+            Ok(claim_id)
+        }
+        Err(Ok(err)) => Err(err),
+        // Anything else means the router did not get far enough to name a reason, which on
+        // this path is the token itself refusing the pull. Let it abort loudly.
+        _ => panic!("the router could not take the delivery"),
     }
 }
 

@@ -31,6 +31,7 @@ const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));
 process.stdout.write(Object.keys(d.networks??{})[0]??"");
 ' "$RECORD")
 [ -n "$CHAIN_KEY" ] || die "the record names no network"
+assert_record_network "$RECORD" "$CHAIN_KEY"
 
 # Lifecycle metadata. A record is active unless it declares otherwise. Parsed, not grepped.
 LIFECYCLE=$(node -e '
@@ -53,6 +54,14 @@ say "file             $RECORD"
 say "network key      $CHAIN_KEY"
 say "router           $ROUTER"
 say "lifecycle        $LC_STATUS"
+INITIALIZATION_POSITION=$(node -e 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const p=d.networks[process.argv[2]].positions?.initialization;process.stdout.write(p?`${p.txHash}@${p.ledger}`:"unavailable")' "$RECORD" "$CHAIN_KEY")
+ACTIVATION_COUNT=$(node -e 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(String(d.networks[process.argv[2]].positions?.activation?.length??0))' "$RECORD" "$CHAIN_KEY")
+say "initialization    $INITIALIZATION_POSITION"
+if [ "$ACTIVATION_COUNT" -gt 0 ]; then
+  say "activation txs    $ACTIVATION_COUNT recorded"
+else
+  say "WARNING           activation transaction evidence is unavailable"
+fi
 
 if [ "$LC_STATUS" != "active" ]; then
   printf '\033[33mWARNING: this record is %s and is not an active deployment.\033[0m\n' "$LC_STATUS"
